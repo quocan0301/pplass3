@@ -16,10 +16,10 @@ class Symbol:
 
 class TypeUtils:
     @ staticmethod
-    def infer(id, type, o, kind=Variable):
+    def infer(name, type, o, kind=Variable):
         for env in o:
-            if (id.name in env) and (env[id.name]["kind"] is kind):
-                env[id.name]["type"] = type
+            if (name in env) and (env[name]["kind"] is kind):
+                env[name]["type"] = type
                 return {"type": type}
         return {"type": None}
 class Search:
@@ -64,13 +64,13 @@ class StaticChecker(Visitor, Utils):
     def check(self):
         return self.visit(self.ast, StaticChecker.globalenv)
 
-    def visitIntegerType(self, ast, param): return {"type": IntegerType()}
-    def visitFloatType(self, ast, param): return {"type": FloatType()}
-    def visitBooleanType(self, ast, param): return {"type": BooleanType()}
-    def visitStringType(self, ast, param): return {"type": StringType()}
-    def visitArrayType(self, ast, param): return ast
-    def visitAutoType(self, ast, param): return {"type": AutoType()}
-    def visitVoidType(self, ast, param): return {"type": VoidType()}
+    def visitIntegerType(self, ast: IntegerType, param): return {"type": IntegerType()}
+    def visitFloatType(self, ast:FloatType, param): return {"type": FloatType()}
+    def visitBooleanType(self, ast:BooleanType, param): return {"type": BooleanType()}
+    def visitStringType(self, ast:StringType, param): return {"type": StringType()}
+    def visitArrayType(self, ast:ArrayType, param): return ast
+    def visitAutoType(self, ast:AutoType, param): return {"type": AutoType()}
+    def visitVoidType(self, ast:VoidType, param): return {"type": VoidType()}
 
     def visitBinExpr(self, ast: BinExpr, param):
         o, typ= param
@@ -159,15 +159,16 @@ class StaticChecker(Visitor, Utils):
         (o, _) = param
         return Search.search(ast.name, o, lambda: self.raisee(
             Undeclared(Identifier(), ast.name)), Variable)
-    def visitArrayCell(self, ast, param): pass
-    def visitIntegerLit(self, ast, param): return {"type": IntegerType()}
-    def visitFloatLit(self, ast, param): return {"type": FloatType()}
-    def visitStringLit(self, ast, param): return {"type": BooleanType()}
-    def visitBooleanLit(self, ast, param): return {"type": StringType()}
-    def visitArrayLit(self, ast, param): pass
-    def visitFuncCall(self, ast, param): pass
-
-    def visitAssignStmt(self, ast, param): pass
+    def visitArrayCell(self, ast: ArrayCell, param): pass
+    def visitIntegerLit(self, ast: IntegerLit, param): return {"type": IntegerType()}
+    def visitFloatLit(self, ast:FloatLit, param): return {"type": FloatType()}
+    def visitStringLit(self, ast:StringLit, param): return {"type": BooleanType()}
+    def visitBooleanLit(self, ast:BooleanLit, param): return {"type": StringType()}
+    
+    def visitArrayLit(self, ast:ArrayLit, param): pass
+    def visitFuncCall(self, ast:FuncCall, param): pass
+    def visitAssignStmt(self, ast:AssignStmt, param): pass
+    
     def visitBlockStmt(self, ast: BlockStmt, param):
         (o, t) = param
         reduce(lambda _, e: self.visit(e, (o if self.forloop["t"] or self.funcdecl["t"] else [{}] + o, t)), ast.body, [])
@@ -181,16 +182,59 @@ class StaticChecker(Visitor, Utils):
                 self.visit(ast.fstmt, param)
         else: raise TypeMismatchInStatement(ast)
             
-    def visitForStmt(self, ast, param): pass
-    def visitWhileStmt(self, ast, param): pass
-    def visitDoWhileStmt(self, ast, param): pass
-    def visitBreakStmt(self, ast, param): pass
-    def visitContinueStmt(self, ast, param): pass
-    def visitReturnStmt(self, ast, param): pass
-    def visitCallStmt(self, ast, param): pass
+    def visitForStmt(self, ast: ForStmt, param): 
+        o, t = param
+        self.forloop["t"] = True
+        self.forloop["ast"] = ast
+        e = "layer"
+        self.inloop.append(e)
+        env = [{}] + o
+        self.visit(ast.init, (env, t))
+        self.forloop["t"] = False
+        self.forloop["ast"] = None
+        cond= self.visit(ast.cond, (env, t))["type"]
+        upd = self.visit(ast.upd, (env, t))["type"]
+        if cond is BooleanType and upd is BooleanType:
+            self.visit(ast.stmt, (env, t))
+            self.inloop.pop()
+        else: raise TypeMismatchInStatement(ast)
+    def visitWhileStmt(self, ast: WhileStmt, param):
+        e = "layer"
+        self.inloop.append(e)
+        cond = self.visit(ast.cond, param)["type"]
+        if cond is BooleanType:
+            self.visit(ast.stmt, param)
+            self.inloop.pop()
+        else: raise TypeMismatchInStatement(ast)
+    def visitDoWhileStmt(self, ast: DoWhileStmt, param):
+        e = "layer"
+        self.inloop.append(e)
+        self.visit(ast.stmt, param)
+        cond = self.visit(ast.cond, param)["type"]
+        if cond is BooleanType:
+            self.inloop.pop()
+        else: raise TypeMismatchInStatement(ast)
+    def visitBreakStmt(self, ast:BreakStmt, param):
+        if len(self.inloop) == 0:
+            MustInLoop(ast)
+    def visitContinueStmt(self, ast:ContinueStmt, param):
+        if len(self.inloop) == 0:
+            MustInLoop(ast)
+    def visitReturnStmt(self, ast:ReturnStmt, param):
+        o, _ = param
+        exprtyp = VoidType() if ast.expr is None else self.visit(ast.expr, param)["type"]
 
-    def visitVarDecl(self, ast, param): pass
-    def visitParamDecl(self, ast, param): pass
-    def visitFuncDecl(self, ast, param): pass
-
-    def visitProgram(self, ast, param): pass
+        if self.funcdecl["t"]:
+            functype = self.funcdecl["rtype"]["type"]
+            if functype is AutoType:
+                self.funcdecl["rtype"] = TypeUtils.infer(self.funcdecl["name"], exprtyp, o, Function)
+            else:
+                if not (functype is FloatType and exprtyp is IntegerType):
+                    if not (functype is exprtyp):
+                        raise TypeMismatchInStatement(ast)
+                    
+    def visitCallStmt(self, ast:CallStmt, param): pass
+    def visitVarDecl(self, ast:VarDecl, param): pass
+    def visitParamDecl(self, ast:ParamDecl, param): pass
+    def visitFuncDecl(self, ast:FuncDecl, param): pass
+    def visitProgram(self, ast:Program, param): pass
