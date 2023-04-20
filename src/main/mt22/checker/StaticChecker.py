@@ -15,7 +15,7 @@ class Symbol:
         self.mtype = typ
 
 class TypeUtils:
-    @ staticmethod
+    @staticmethod
     def infer(name, type, o, kind=Variable):
         for env in o:
             if (name in env) and (env[name]["kind"] is kind):
@@ -23,19 +23,13 @@ class TypeUtils:
                 return {"type": type}
         return {"type": None}
 class Search:
-    @ staticmethod
+    @staticmethod
     def search(name, env, func, kind=Variable):
         for x in env:
             if (name in x) and (x[name]["kind"] is kind):
                 return x[name]
         return func()
     
-class Check:
-    @ staticmethod
-    def check(name, env, func) -> None:
-        if name in env:
-            func()    
-
 class StaticChecker(Visitor, Utils):
     globalenv = [
         Symbol("readInteger", MType([], IntegerType())),
@@ -49,8 +43,6 @@ class StaticChecker(Visitor, Utils):
         Symbol("super", MType([[Expr()]], VoidType())),
         Symbol("preventDefault", MType([], VoidType())),
     ]
-    def raisee(self, x):
-        raise x
 
     def __init__(self, ast):
         self.ast = ast
@@ -58,11 +50,21 @@ class StaticChecker(Visitor, Utils):
         self.init = None
         self.inloop = []
         self.forloop= {"t": False, "ast": None}
-        self.funcdecl = {"t": False, "rtype": None, "name": None, "inher": {"funcname": None, "s_pD": None}}
+        self.funcdecl = {"t": False, "rtype": None, "name": None, "inher": {"func": None, "s_pD": None}}
         
  
     def check(self):
         return self.visit(self.ast, StaticChecker.globalenv)
+    
+    def raisee(self, x):
+        raise x
+    
+    def checkParam(self, name, o):
+        if self.funcdecl["inher"]["func"] is not None and self.funcdecl["inher"]["s_pD"] == "super":
+            func = Search.search(self.funcdecl["inher"]["func"]["name"], o, None, Function)
+            param = self.lookup(name, func["params_inher"], lambda x: x["name"])
+            if param is not None and param["inher"]:
+                raise Invalid(Parameter(), name)
 
     def visitIntegerType(self, ast: IntegerType, param): return {"type": IntegerType()}
     def visitFloatType(self, ast:FloatType, param): return {"type": FloatType()}
@@ -80,8 +82,8 @@ class StaticChecker(Visitor, Utils):
         if (ast.right is FuncCall) and (ast.left is FuncCall):
             rightn = ast.right.name
             leftn = ast.left.name
-            rightsym = self.lookup(rightn, StaticChecker.globalenv, lambda sym: sym.name)
-            leftsym = self.lookup(leftn, StaticChecker.globalenv, lambda sym: sym.name)
+            rightsym = self.lookup(rightn, StaticChecker.globalenv, lambda x: x.name)
+            leftsym = self.lookup(leftn, StaticChecker.globalenv, lambda x: x.name)
             righttyp = Search.search(rightn, o, lambda: self.raisee(Undeclared(Function(), rightn)), Function)["type"] if rightsym is None else rightsym.mtype.rtype
             lefttyp = Search.search(leftn, o, lambda: self.raisee(Undeclared(Function(), leftn)), Function)["type"] if leftsym is None else leftsym.mtype.rtype
             if righttyp is AutoType and lefttyp is AutoType:
@@ -94,14 +96,14 @@ class StaticChecker(Visitor, Utils):
                 
         elif ast.right is FuncCall:
             rightn = ast.right.name
-            rightsym = self.lookup(rightn, StaticChecker.globalenv, lambda sym: sym.name)
+            rightsym = self.lookup(rightn, StaticChecker.globalenv, lambda x: x.name)
             righttyp = Search.search(rightn, o, lambda: self.raisee(Undeclared(Function(), rightn)), Function)["type"] if rightsym is None else rightsym.mtype.rtype
             lefttyp = self.visit(ast.left, param)["type"]
             righttyp = self.visit(ast.right, (o, lefttyp if righttyp is AutoType else typ))["type"]
             
         elif ast.left is FuncCall:
             leftn = ast.left.name
-            leftsym = self.lookup(rightn, StaticChecker.globalenv, lambda sym: sym.name)
+            leftsym = self.lookup(rightn, StaticChecker.globalenv, lambda x: x.name)
             lefttyp = Search.search(rightn, o, lambda: self.raisee(Undeclared(Function(), leftn)), Function)["type"] if leftsym is None else leftsym.mtype.rtype
             righttyp = self.visit(ast.right, param)["type"]
             lefttyp = self.visit(ast.left, (o, righttyp if lefttyp is AutoType else typ))["type"]
@@ -156,9 +158,8 @@ class StaticChecker(Visitor, Utils):
             raise TypeMismatchInExpression(ast)
 
     def visitId(self, ast: Id, param):
-        (o, _) = param
-        return Search.search(ast.name, o, lambda: self.raisee(
-            Undeclared(Identifier(), ast.name)), Variable)
+        o, _ = param
+        return Search.search(ast.name, o, lambda: self.raisee(Undeclared(Identifier(), ast.name)), Variable)
     def visitArrayCell(self, ast: ArrayCell, param): pass
     def visitIntegerLit(self, ast: IntegerLit, param): return {"type": IntegerType()}
     def visitFloatLit(self, ast:FloatLit, param): return {"type": FloatType()}
@@ -170,8 +171,8 @@ class StaticChecker(Visitor, Utils):
     def visitAssignStmt(self, ast:AssignStmt, param): pass
     
     def visitBlockStmt(self, ast: BlockStmt, param):
-        (o, t) = param
-        reduce(lambda _, e: self.visit(e, (o if self.forloop["t"] or self.funcdecl["t"] else [{}] + o, t)), ast.body, [])
+        o, t = param
+        reduce(lambda _, line: self.visit(line, (o if self.forloop["t"] or self.funcdecl["t"] else [{}] + o, t)), ast.body, [])
     def visitIfStmt(self, ast: IfStmt, param):
         cond = self.visit(ast.cond, param)
         if cond["type"] is BooleanType:
@@ -229,12 +230,75 @@ class StaticChecker(Visitor, Utils):
             if functype is AutoType:
                 self.funcdecl["rtype"] = TypeUtils.infer(self.funcdecl["name"], exprtyp, o, Function)
             else:
-                if not (functype is FloatType and exprtyp is IntegerType):
-                    if not (functype is exprtyp):
+                if functype is not FloatType and exprtyp is not IntegerType:
+                    if functype is not exprtyp:
                         raise TypeMismatchInStatement(ast)
                     
     def visitCallStmt(self, ast:CallStmt, param): pass
     def visitVarDecl(self, ast:VarDecl, param): pass
-    def visitParamDecl(self, ast:ParamDecl, param): pass
-    def visitFuncDecl(self, ast:FuncDecl, param): pass
+    def visitParamDecl(self, ast:ParamDecl, param):
+        o, _ = param
+        name = ast.name
+        self.checkParam(name, o, Parameter())
+        par = {"name": name, "type": ast.typ, "kind": Variable(),
+               "inher": ast.inherit, "out": ast.out}
+        o[0][name] = par
+        return par
+    def visitFuncDecl(self, ast:FuncDecl, param): 
+        o, _ = param
+        name = ast.name
+        check = self.lookup(name, StaticChecker.globalenv, lambda x: x.name)
+        if check is not None:
+            raise Redeclared(Function(), name)
+        o1 = [{}] + o
+        inherit = ast.inherit
+        body = ast.body
+        self.funcdecl["t"] = True
+        self.funcdecl["rtype"] = ast.return_type
+        self.funcdecl["name"] = ast.name
+
+        if inherit is not None:
+            inherfunc = Search.search(inherit, o1, lambda: self.raisee(
+                Undeclared(Function(), inherit)), Function)
+            if len(inherfunc["params"]) != 0:
+                if len(body.body) == 0:
+                    raise InvalidStatementInFunction(name)
+                fstmt = body.body[0]
+                if fstmt is not CallStmt:
+                    raise InvalidStatementInFunction(name)
+                fstmt_name = fstmt.name
+                if fstmt_name != "super" and fstmt_name != "preventDefault":
+                    raise InvalidStatementInFunction(name)
+                self.funcdecl["inher"]["s_pD"] = "preventDefault" if fstmt_name == "preventDefault" else "super"
+            else:
+                if len(body.body) != 0:
+                    fstmt = body.body[0]
+                    if fstmt is CallStmt:
+                        fstmt_name = fstmt.name
+                        if fstmt_name == "preventDefault":
+                            self.funcdecl["inher"]["s_pD"] = "preventDefault"
+                        else:
+                            raise InvalidStatementInFunction(name)
+                    else:
+                        raise InvalidStatementInFunction(name)
+            self.funcdecl["inher"]["func"] = {
+                **inherfunc, **{"name": inherit}}
+        params = []
+        params_inher = [*self.funcdecl["inher"]["func"]["params_inher"]] if self.funcdecl["inher"]["func"] is not None else []
+        if self.funcdecl["inher"]["super_or_preventDefault"] == "super":
+            for par in params_inher:
+                o1[0][par["name"]] = par
+        for e in ast.params:
+            par = self.visit(e, (o1, None))
+            if par["inher"]:
+                params_inher.append(par)
+            params.append(par)
+        o[0][name]["params_inher"] = params_inher
+        o[0][name]["params"] = params
+        self.visit(body, (o1, None))
+        self.funcdecl["t"] = False
+        self.funcdecl["rtype"] = None
+        self.funcdecl["name"] = None
+        self.funcdecl["inher"] = {
+            "func": None, "s_pD": None}
     def visitProgram(self, ast:Program, param): pass
