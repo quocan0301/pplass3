@@ -2,6 +2,9 @@ import sys
 import os
 from antlr4 import *
 from antlr4.error.ErrorListener import ConsoleErrorListener, ErrorListener
+
+from StaticChecker import StaticChecker
+from StaticError import StaticError
 if not './main/mt22/parser/' in sys.path:
     sys.path.append('./main/mt22/parser/')
 if not './main/mt22/astgen/' in sys.path:
